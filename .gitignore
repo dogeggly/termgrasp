@@ -1,5 +1,6 @@
 **/node_modules/
 **/dist/
+**/tables/
 .env
 .idea/
 .vscode/

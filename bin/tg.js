@@ -4,7 +4,6 @@ import path from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 program
     .name('tg')
@@ -16,7 +15,7 @@ program
     .command('why')
     .description('分析剪贴板里的终端报错')
     .action(async () => {
-        const scriptPath = path.join(__dirname, '../dist/client/why.js');
+        const scriptPath = path.join(__filename, '../../dist/client/why.js');
 
         if (!fs.existsSync(scriptPath)) {
             console.error('未找到构建产物，请先执行 npm run build');

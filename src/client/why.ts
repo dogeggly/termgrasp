@@ -1,5 +1,5 @@
 import net from 'node:net';
-import {SOCKET_PATH} from "../share/socket.js";
+import SOCKET_PATH from "../share/socket.js";
 import type Payload from "../share/payload.js";
 import clipboard from "clipboardy";
 
@@ -8,7 +8,7 @@ const client: net.Socket = net.createConnection(SOCKET_PATH, (): void => {
     // 组装要发送给 Server 的指令数据
     const errorLog: string = clipboard.readSync();
     if (!errorLog || !errorLog.trim()) {
-        console.log('剪贴板是空的，请先用鼠标选中一下终端里的报错信息哦！');
+        process.stdout.write('剪贴板是空的，请先用鼠标选中一下终端里的报错信息哦！');
         client.end();
         return;
     }
@@ -25,7 +25,7 @@ const client: net.Socket = net.createConnection(SOCKET_PATH, (): void => {
 let newlineStreak: number = 0;
 
 // 接收 Server 发回的流式数据
-client.on('data', (data: Buffer): void => {
+client.on('data', (data: string | Buffer): void => {
     // 这里把 Server 返回的分析结果打印到屏幕上
     let chunk: string = data.toString();
 
