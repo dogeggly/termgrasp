@@ -2,77 +2,71 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目架构
+## 项目概述
 
-TermGrasp 是一个 C/S（客户端/服务端）架构的终端助手，使用 Node.js 本地进程间通信（IPC）连接客户端和守护进程。
+TermGrasp 是一个终端分析工具，使用大模型帮助开发者理解并解决终端错误。使用方法：选中终端内容复制到剪贴板，然后运行 `tg why` 命令即可获得分析结果。
 
-### 通信机制
-- **Windows**: 使用 Named Pipe (`\\.\pipe\termgrasp-ipc`)
-- **Mac/Linux**: 使用 Unix Domain Socket (`/tmp/termgrasp.sock`)
+## 核心架构
 
-### 目录结构
-- `src/client/` - 客户端代码，负责从剪贴板读取错误并发送到服务端
-- `src/server/` - 服务端代码，守护进程，负责处理请求并调用大模型
-- `src/share/` - 客户端和服务端共享的代码（socket 路径、数据类型）
-- `bin/tg.js` - 全局命令入口（通过 `npm link` 安装）
-- `src/index.ts` - 服务端主入口
+### 主要模块
+- **src/config.ts**: 初始化配置，包括 OpenAI 客户端、环境变量加载和 Markdown 渲染器设置
+- **src/db.ts**: 数据库操作模块，使用 better-sqlite3 实现本地记忆存储（短期记忆和长期记忆）
+- **src/client/why.ts**: 核心业务逻辑，处理剪贴板内容、LLM 对话和工具调用
+- **bin/tg.js**: 命令行入口，通过 Commander 处理 CLI 命令
 
-### 数据流
-1. 用户运行 `tg why`
-2. 客户端从剪贴板读取错误日志
-3. 通过 Socket/Pipe 发送 JSON 格式的 Payload 到服务端
-4. 服务端调用大模型（OpenAI 接口兼容），流式返回分析结果
-5. 客户端实时输出大模型的响应
+### 记忆系统
+- **短期记忆** (chat_history): 存储未压缩的原始对话内容，使用 `is_compacted` 标记
+- **长期记忆** (session_wiki): 存储压缩后的知识点，包含标题和详细内容
+- 会话隔离：每个分析任务使用 `sessionId` 隔离
 
-### TypeScript 配置
-- 模块系统：`nodenext`
-- 目标版本：ES2020
-- 严格模式开启
-- `.ts` 文件必须使用 `.js` 扩展名进行导入（verbatimModuleSyntax）
+### LLM 交互流程
+1. 读取剪贴板内容
+2. 组合系统提示、用户提示、历史对话和历史 Wiki
+3. 第一次调用 LLM 检查是否需要调用工具函数
+4. 如果需要，使用工具函数获取历史详情
+5. 第二次调用 LLM 生成最终分析结果
+6. 保存对话到记忆系统
 
-## 常用命令
+## 开发命令
 
-### 开发流程
+### 构建和运行
 ```bash
 # 安装依赖
 npm install
 
-# 配置环境变量（需要创建 .env 文件）
-# LLM_API_KEY=xxxxxxxxxxxxxxxx
-# LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-# LLM_MODEL=glm-4.5
-
-# 编译 TypeScript
+# 构建项目
 npm run build
 
-# 启动守护进程（服务端）
-npm run start
-
-# 开发模式（自动重新编译）
-npm run dev
-
-# 挂载全局命令（首次使用需要）
+# 链接全局命令（安装后可使用 tg 命令）
 npm link
 
-# 使用命令（需要先启动守护进程）
-tg why
+# 开发模式运行（无需构建）
+npx tsx src/client/why.ts
 ```
 
-### 重新构建和测试
-修改代码后需要重新编译：
-```bash
-npm run build  # 重新编译
-npm run start  # 重启守护进程（或使用 Ctrl+C 停止后重新启动）
+### 环境配置
+创建 `.env` 文件：
+```
+LLM_API_KEY=xxxxxxxxxxxxxxxx
+LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+LLM_MODEL=glm-4.5
 ```
 
-## 重要注意事项
+### 数据库
+- 数据库文件存储在 `tables/.tg_data.db`
+- 使用 SQLite WAL 模式提升并发性能
+- 表结构包含：chat_history（短期记忆）和 session_wiki（长期记忆）
 
-1. **导入路径**: 由于 `verbatimModuleSyntax` 配置，所有 TypeScript 文件导入时必须使用 `.js` 扩展名，即使源文件是 `.ts`。
+## 技术栈
+- TypeScript with ES2020 modules
+- OpenAI API（通过自定义 baseURL）
+- better-sqlite3 数据库
+- marked + marked-terminal Markdown 渲染
+- Commander.js CLI 框架
+- clipboardy 剪贴板操作
 
-2. **服务端清理**: 服务端启动时会自动清理遗留的 Socket 文件，但 Windows 下 Named Pipe 不需要清理。
-
-3. **流式输出**: 服务端使用 OpenAI 的流式 API，将大模型的每个 Token 实时转发给客户端。
-
-4. **跨平台换行符**: 客户端使用 `readline` 的 `crlfDelay: Infinity` 兼容 Windows (\r\n) 和 Linux (\n) 的换行符。
-
-5. **依赖 better-sqlite3**: 这是一个原生模块，可能需要在特定平台上重新编译。如果遇到问题，尝试删除 `node_modules` 和 `package-lock.json` 后重新安装。
+## 注意事项
+- 项目使用 ES2020 modules，需要 Node.js 支持的运行环境
+- 每次启动时会生成新的 sessionId，用于当前会话的隔离
+- 历史记忆会持久化存储，但不会跨会话共享
+- 工具函数目前只支持 `fetch_wiki_detail` 用于获取历史详情

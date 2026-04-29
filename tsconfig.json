@@ -12,7 +12,8 @@
     // "lib": ["esnext"],
     "types": [
       "node",
-      "better-sqlite3"
+      "better-sqlite3",
+      "marked-terminal"
     ],
     // and npm install -D @types/node
 

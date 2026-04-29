@@ -5,48 +5,86 @@ import {fileURLToPath, pathToFileURL} from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 
+const start = async (scriptPath) => {
+    if (!fs.existsSync(scriptPath)) {
+        console.error('未找到构建产物，请先执行 npm run build');
+        process.exit(1);
+    }
+    try {
+        const fileUrl = pathToFileURL(scriptPath).href;
+        await import(fileUrl);
+    } catch (err) {
+        console.error('执行失败: ', err);
+        process.exit(1);
+    }
+}
+
 program
     .name('tg')
     .description('TermGrasp - 你的本地终端极客助手')
     .version('1.0.0');
 
-// 定义 why 命令
 program
     .command('why')
-    .description('分析剪贴板里的终端报错')
+    .description('分析剪贴板里的终端信息')
     .action(async () => {
-        const scriptPath = path.join(__filename, '../../dist/client/why.js');
+        const scriptPath = path.join(__filename, '../../dist/why.js');
+        await start(scriptPath);
+    });
 
-        if (!fs.existsSync(scriptPath)) {
-            console.error('未找到构建产物，请先执行 npm run build');
+program
+    .command('history')
+    .description('查看当前会话的历史记录')
+    .action(async () => {
+        const scriptPath = path.join(__filename, '../../dist/history.js');
+        await start(scriptPath);
+    });
+
+program
+    .command('clear')
+    .description('清空当前会话的历史记录，并进入新会话')
+    .action(async () => {
+        const scriptPath = path.join(__filename, '../../dist/clear.js');
+        await start(scriptPath);
+    });
+
+program
+    .command('compact')
+    .description('压缩当前会话的历史记录，生成一个 Wiki')
+    .action(async () => {
+        const scriptPath = path.join(__filename, '../../dist/compact.js');
+        await start(scriptPath);
+    });
+
+program
+    .command('restore')
+    .description('还原压缩后的对话，将 Wiki 详情重新插入短期记忆')
+    .argument('<wikiId>', '需要还原的 Wiki ID')
+    .action(async () => {
+        const scriptPath = path.join(__filename, '../../dist/restore.js');
+        await start(scriptPath);
+    });
+
+program
+    .command('summary')
+    .description('')
+    .action(async () => {
+        const scriptPath = path.join(__filename, '../../dist/summary.js');
+        await start(scriptPath);
+    });
+
+program
+    .command('session')
+    .description('创建一个新的会话并进入，或进入一个旧会话')
+    .argument('[sessionId]', '需要进入的会话 ID')
+    .option('-l, --ls', '列出会话列表')
+    .action(async (sessionId, options) => {
+        if (options?.ls && sessionId) {
+            console.error('参数冲突: 不能同时使用 sessionId 和 --ls');
             process.exit(1);
         }
-
-        try {
-            const fileUrl = pathToFileURL(scriptPath).href;
-            await import(fileUrl);
-        } catch (err) {
-            console.error('执行失败:', err.message);
-            process.exit(1);
-        }
+        const scriptPath = path.join(__filename, '../../dist/session.js');
+        await start(scriptPath);
     });
 
 program.parse();
-
-/*
-const command = process.argv[2];
-
-if (command === 'why') {
-    // 相当于帮你隐式执行了 tsx src/client/why.ts
-    const scriptPath = path.join(__dirname, '../src/client/why.ts');
-
-    const result = spawnSync('tsx', [scriptPath], {stdio: 'inherit', shell: true});
-
-    if (result.error) {
-        console.error(`执行失败: ${result.error.message}`);
-        process.exit(1);
-    }
-} else {
-    console.log('未知的指令，支持的指令：tg why');
-}
-*/
