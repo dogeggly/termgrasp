@@ -1,26 +1,23 @@
 import {getFullHistory, getWiki} from "./db.js";
-import {marked} from "marked";
-import TerminalRenderer from "marked-terminal";
 
 const wiki = getWiki();
 const recentHistory = getFullHistory();
 
-const recentHistoryRows = recentHistory.map(item => `|${item.id}|${item.content}|`).join('\n');
-const wikiRows = wiki.map(item => `|${item.id}|${item.title}|${item.detail_md}|`).join('\n');
+const flattenText = (value: string): string => value.replace(/\r?\n/g, ' ');
 
-// 配置 marked 使用 TerminalRenderer
-marked.setOptions({
-    renderer: new TerminalRenderer() as any
-});
+const recentHistoryRows = recentHistory
+    .map(item => `------------------------------------------------------------------
+- ID: ${item.id}\n- 是否被压缩: ${item.is_compacted}\n- 创建时间: ${item.created_at}\n- 内容: ${flattenText(item.content)}`)
+    .join('\n');
+const wikiRows = wiki
+    .map(item => `------------------------------------------------------------------
+- ID: ${item.id}\n- 标题: ${item.title}\n- 关联的历史记录: ${item.chat_ids}\n- 创建时间: ${item.created_at}\n- 详情: ${flattenText(item.detail_md)}`)
+    .join('\n');
 
-console.log(marked(`
+console.log(`
 ## 当前会话的历史记录
-| ID | 会话 ID | 内容 | 是否被压缩 | 创建时间 |
-|---|---|---|---|---|
 ${recentHistoryRows}
-
+------------------------------------------------------------------
 ## 当前会话压缩后的Wiki目录
-| ID | 会话 ID | 标题 | 详情 | 关联的历史记录 | 创建时间 |
-|---|---|---|---|---|---|
 ${wikiRows}
-`))
+`)

@@ -165,7 +165,9 @@ export function restoreCompactedHistory(wikiId: number): void {
     const wikiStmt = db.prepare(`SELECT chat_ids
                                  FROM session_wiki
                                  WHERE id = ?`);
-    const wikiRow = wikiStmt.get(wikiId) as { chat_ids: string };
+    const wikiRow = wikiStmt.get(wikiId) as { chat_ids: string } | null;
+
+    if (!wikiRow) throw Error('不存在此 Wiki 项')
 
     const chatHistoryIds = wikiRow.chat_ids
         .split(',')

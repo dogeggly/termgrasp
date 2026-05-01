@@ -27,6 +27,8 @@ program
 program
     .command('why')
     .description('分析剪贴板里的终端信息')
+    .option('-m, --message <text>', '补充的对话信息')
+    .option('-s, --single', '此次对话不加入会话记录当中')
     .action(async () => {
         const scriptPath = path.join(__filename, '../../dist/why.js');
         await start(scriptPath);
@@ -59,17 +61,9 @@ program
 program
     .command('restore')
     .description('还原压缩后的对话，将 Wiki 详情重新插入短期记忆')
-    .argument('<wikiId>', '需要还原的 Wiki ID')
+    .argument('[wikiId]', '需要还原的 Wiki ID')
     .action(async () => {
         const scriptPath = path.join(__filename, '../../dist/restore.js');
-        await start(scriptPath);
-    });
-
-program
-    .command('summary')
-    .description('')
-    .action(async () => {
-        const scriptPath = path.join(__filename, '../../dist/summary.js');
         await start(scriptPath);
     });
 

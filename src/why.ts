@@ -42,9 +42,43 @@ interface SafeToolCall {
     };
 }
 
+const parseCliArgs = (argv: string[]) => {
+    let extraMessage = '';
+    let single = false;
+
+    for (let i = 0; i < argv.length; i += 1) {
+        const token = argv[i];
+
+        if (token === '-s' || token === '--single') {
+            single = true;
+            continue;
+        }
+
+        if (token === '-m' || token === '--message') {
+            const next = argv[i + 1];
+            if (next && !next.startsWith('-')) {
+                extraMessage = `补充信息:${next}`;
+                i += 1;
+            }
+        }
+    }
+
+    return {extraMessage, single};
+};
+
+const formatHistory = (items: { id: number; content: string }[]) =>
+    items.map(item => `ID:${item.id}\n内容:${item.content}`).join('\n\n');
+
+const formatWikiIndex = (items: { id: number; title: string }[]) =>
+    items.map(item => `ID:${item.id}\n标题:${item.title}`).join('\n\n');
+
+const formatWikiDetail = (items: { id: number; detail_md: string }[]) =>
+    items.map(item => `ID:${item.id}\n详情:${item.detail_md}`).join('\n\n');
+
 const why = async (): Promise<void> => {
-    const errorLog: string = clipboard.readSync();
-    if (!errorLog || !errorLog.trim()) {
+    const {extraMessage, single} = parseCliArgs(process.argv.slice(2));
+    const termLog: string = clipboard.readSync();
+    if (!termLog || !termLog.trim()) {
         console.log('剪贴板是空的，请先用鼠标选中一下终端里的信息哦！');
         return;
     }
@@ -55,13 +89,15 @@ const why = async (): Promise<void> => {
         spinner: 'dots' // 经典的三个点跳动动画
     }).start();
 
-    const wikiIndex = getWikiIndex();
-    const recentHistory = getRecentHistory();
+    const wikiIndex = single ? [] : getWikiIndex();
+    const recentHistory = single ? [] : getRecentHistory();
 
     // 组装发给大模型的 Prompt
     const systemPrompt: string = settings.global ?? '';
+    const historyText = formatHistory(recentHistory);
+    const wikiIndexText = formatWikiIndex(wikiIndex);
     const userPrompt = `你是一个资深的程序员助手。请分析用户提供的终端信息，给出说明或解决方案。必要时提供相关命令，并说明命令是干什么的，解决什么问题。
-    \n终端内容:${errorLog}\n本轮历史中完整的对话:${recentHistory}\n本轮历史中对话压缩后的Wiki目录:${wikiIndex}`;
+\n终端内容:${termLog}\n${extraMessage}\n本轮历史中完整的对话:\n${historyText || '无'}\n本轮历史中对话压缩后的Wiki目录:\n${wikiIndexText || '无'}`;
 
     const tools: OpenAI.Chat.ChatCompletionTool[] = [
         {
@@ -93,12 +129,20 @@ const why = async (): Promise<void> => {
     ];
 
     // 第一次调用：先看是否触发 function calling
-    const firstCompletion = await openai.chat.completions.create({
-        model: LLM_MODEL,
-        messages: baseMessages,
-        tools: tools,
-        tool_choice: "auto",
-    });
+    let firstCompletion;
+    if (single) {
+        firstCompletion = await openai.chat.completions.create({
+            model: LLM_MODEL,
+            messages: baseMessages
+        });
+    } else {
+        firstCompletion = await openai.chat.completions.create({
+            model: LLM_MODEL,
+            messages: baseMessages,
+            tools: tools,
+            tool_choice: "auto",
+        });
+    }
 
     const firstResponse = firstCompletion.choices[0]?.message;
 
@@ -116,7 +160,9 @@ const why = async (): Promise<void> => {
         console.log(marked(firstResponse.content));
         console.log('----------------------------------------------------');
         console.log('LLM 分析完成');
-        saveChatMsg(`历史终端信息:${errorLog}\nLLM的完整分析结果:${firstResponse.content}`);
+        if (!single) {
+            saveChatMsg(`历史终端信息:${termLog}\nLLM的完整分析结果:${firstResponse.content}`);
+        }
         return;
     }
 
@@ -144,11 +190,12 @@ const why = async (): Promise<void> => {
 
         const args = toolCall.function.arguments;
         const wikiDetail = getWikiDetail(args.wiki_id);
+        const wikiDetailText = formatWikiDetail(wikiDetail);
 
         baseMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: `历史 Wiki 目录中 ${args.wiki_id} 号 id 的详细内容如下:${wikiDetail}`,
+            content: `历史 Wiki 目录中 ${args.wiki_id} 号 id 的详细内容如下:\n${wikiDetailText || '无'}`,
         });
     }
 
@@ -168,7 +215,9 @@ const why = async (): Promise<void> => {
     console.log(marked(secondResponse.content));
     console.log('----------------------------------------------------');
     console.log('LLM 分析完成');
-    saveChatMsg(`历史终端信息:${errorLog}\nLLM的完整分析结果:${secondResponse.content}`);
+    if (!single) {
+        saveChatMsg(`历史终端信息:${termLog}\nLLM的完整分析结果:${secondResponse.content}`);
+    }
 }
 
 why();
