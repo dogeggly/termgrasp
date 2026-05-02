@@ -67,7 +67,7 @@ if (!sessions || sessions.length === 0) {
 sessions = getSessions();
 const sessionId = sessions[0]!.id;
 
-interface ChatHistory {
+export interface ChatHistory {
     id: number;
     session_id: number;
     content: string;
@@ -75,7 +75,7 @@ interface ChatHistory {
     created_at: string;
 }
 
-interface SessionWiki {
+export interface SessionWiki {
     id: number;
     session_id: number;
     title: string;
@@ -89,7 +89,7 @@ interface session {
     created_at: string;
 }
 
-type LLMPrompt<T, K extends keyof T> = { [P in K]: T[P] };
+export type LLMPrompt<T, K extends keyof T> = { [P in K]: T[P] };
 
 // 获取长期记忆“目录”
 export function getWikiIndex(): LLMPrompt<SessionWiki, 'id' | 'title'>[] {
@@ -121,7 +121,8 @@ export function getRecentHistory(): LLMPrompt<ChatHistory, 'id' | 'content'>[] {
     const stmt = db.prepare(`SELECT id, content
                              FROM chat_history
                              WHERE session_id = ?
-                               AND is_compacted = 0`);
+                               AND is_compacted = 0
+                             order by created_at desc`);
     return stmt.all(sessionId) as LLMPrompt<ChatHistory, 'id' | 'content'>[];
 }
 

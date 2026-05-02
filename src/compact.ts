@@ -1,61 +1,21 @@
 import {OpenAI} from "openai";
 import {getRecentHistory, saveSessionWiki} from "./db.js";
-import fs from "fs";
-import path from "path";
-import {fileURLToPath} from "url";
 import {z} from 'zod';
 import {zodResponseFormat} from 'openai/helpers/zod';
 import "dotenv/config";
 import ora, {type Ora} from "ora";
-
-const LLM_API_KEY = process.env.LLM_API_KEY;
-const LLM_BASE_URL = process.env.LLM_BASE_URL;
-const LLM_MODEL = process.env.LLM_MODEL;
-
-if (!LLM_API_KEY || !LLM_BASE_URL || !LLM_MODEL) {
-    throw Error('LLM_API_KEY, LLM_BASE_URL, LLM_MODEL 环境变量必须设置');
-}
-
-const openai = new OpenAI({
-    apiKey: LLM_API_KEY,
-    baseURL: LLM_BASE_URL
-});
-
-const __filename = fileURLToPath(import.meta.url);
-const settingsPath = path.join(__filename, '../../settings.json');
-const settings: { global: string } = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-
-const formatHistory = (items: { id: number; content: string }[]) =>
-    items.map(item => `ID:${item.id}\n内容:${item.content}`).join('\n\n');
-
-const extractEntryFromText = (content: string) => {
-    const titleMatch = content.match(/(?:^|\n)\s*title\s*[:：]\s*(.+)/i);
-    const detailMatch = content.match(/(?:^|\n)\s*detail_md\s*[:：]\s*([\s\S]+)/i);
-
-    if (!titleMatch && !detailMatch) {
-        return null;
-    }
-
-    return {
-        entries: [
-            {
-                title: (titleMatch?.[1] || '').trim(),
-                detail_md: (detailMatch?.[1] || '').trim(),
-            }
-        ]
-    };
-};
+import {extractEntryFromText, formatHistory, LLM_MODEL, openai, settings} from "./share.js";
 
 const compact = async (): Promise<void> => {
     const recentHistory = getRecentHistory();
 
-    const systemPrompt: string = settings.global ?? '';
+    const systemPrompt: string = `${settings.global}\n${settings.compact}`;
     const historyText = formatHistory(recentHistory);
     if (!historyText) {
         console.log('没有历史记录可供分析');
         return;
     }
-    const userPrompt = `你是一个资深的程序员助手。请根据用户提供的历史终端信息与LLM的完整分析结果，写一份总结性的 Wiki 条目。要求 title 在 15 字以内，detail_md 在 100 字以内\n本轮历史中完整的对话:\n${historyText}`;
+    const userPrompt = `本轮历史中完整的对话:\n${historyText}`;
 
     const baseMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
         {role: 'system', content: systemPrompt},
@@ -93,7 +53,7 @@ const compact = async (): Promise<void> => {
 
     const extracted = extractEntryFromText(response.content);
     if (!extracted) {
-        throw Error(`LLM 返回内容无法解析为条目。原始内容:${response.content}`);
+        throw Error(`LLM 压缩返回内容无法解析为条目。原始内容:${response.content}`);
     }
 
     const validatedData = WikiEntriesSchema.parse(extracted);

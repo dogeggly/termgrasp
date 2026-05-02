@@ -1,32 +1,22 @@
 import clipboard from "clipboardy";
-import {getRecentHistory, getWikiDetail, getWikiIndex, saveChatMsg} from "./db.js";
+import {
+    type ChatHistory,
+    getRecentHistory,
+    getWikiDetail,
+    getWikiIndex,
+    type LLMPrompt,
+    saveChatMsg,
+    saveSessionWiki
+} from "./db.js";
 import {OpenAI} from "openai";
 import ora, {type Ora} from "ora";
 import {marked} from "marked";
 import TerminalRenderer from "marked-terminal";
 import "dotenv/config";
-import {fileURLToPath} from "url";
-import path from "path";
-import fs from "fs";
-
-// 初始化大模型客户端
-const LLM_API_KEY = process.env.LLM_API_KEY;
-const LLM_BASE_URL = process.env.LLM_BASE_URL;
-const LLM_MODEL = process.env.LLM_MODEL;
-
-if (!LLM_API_KEY || !LLM_BASE_URL || !LLM_MODEL) {
-    throw Error('LLM_API_KEY, LLM_BASE_URL, LLM_MODEL 环境变量必须设置');
-}
-
-const openai = new OpenAI({
-    apiKey: LLM_API_KEY,
-    baseURL: LLM_BASE_URL
-});
-
-// 读取 settings.json
-const __filename = fileURLToPath(import.meta.url);
-const settingsPath = path.join(__filename, '../../settings.json');
-const settings: { global: string } = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+import {z} from "zod";
+import {zodResponseFormat} from "openai/helpers/zod";
+import {extractEntryFromText, formatHistory, LLM_MODEL, openai, settings} from "./share.js";
+import {readFileTool, readFileToolHandler, type ReadFileArgs} from "./tools.js";
 
 // 配置 marked 使用 TerminalRenderer 来渲染 Markdown
 marked.setOptions({
@@ -38,9 +28,29 @@ interface SafeToolCall {
     type: 'function';
     function: {
         name: string;
-        arguments: { wiki_id: number[] };
+        arguments: string | {
+            wiki_id?: number[];
+            wiki_ids?: number[];
+            file_path?: string;
+            start_line?: number;
+            end_line?: number;
+            max_chars?: number;
+        };
     };
 }
+
+const parseToolArgs = <T>(input: SafeToolCall['function']['arguments']): T => {
+    if (typeof input === 'string') {
+        try {
+            return JSON.parse(input) as T;
+        } catch (error: Error | unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw Error(`LLM 返回的工具参数无法解析为 JSON:${message}`);
+        }
+    }
+
+    return input as T;
+};
 
 const parseCliArgs = (argv: string[]) => {
     let extraMessage = '';
@@ -66,157 +76,228 @@ const parseCliArgs = (argv: string[]) => {
     return {extraMessage, single};
 };
 
-const formatHistory = (items: { id: number; content: string }[]) =>
-    items.map(item => `ID:${item.id}\n内容:${item.content}`).join('\n\n');
+const searchWikiTool: OpenAI.Chat.ChatCompletionTool = {
+    type: "function",
+    function: {
+        name: "fetch_wiki_detail",
+        description: "当用户当前的问题与历史 Wiki 目录中的某个主题相关，且你需要了解该历史步骤的详细内容时，调用此工具获取详情。",
+        parameters: {
+            type: "object",
+            properties: {
+                wiki_ids: {
+                    type: "array",
+                    items: {
+                        type: "integer"
+                    },
+                    description: "需要查阅的原始 Wiki 节点的 ID 数组，例如 [1, 3, 5]。",
+                },
+            },
+            required: ["wiki_ids"],
+        },
+        strict: true
+    },
+}
 
-const formatWikiIndex = (items: { id: number; title: string }[]) =>
+const formatWikiIndex = (items: { id: number; title: string }[]): string =>
     items.map(item => `ID:${item.id}\n标题:${item.title}`).join('\n\n');
 
-const formatWikiDetail = (items: { id: number; detail_md: string }[]) =>
+const formatWikiDetail = (items: { id: number; detail_md: string }[]): string =>
     items.map(item => `ID:${item.id}\n详情:${item.detail_md}`).join('\n\n');
 
-const why = async (): Promise<void> => {
-    const {extraMessage, single} = parseCliArgs(process.argv.slice(2));
-    const termLog: string = clipboard.readSync();
-    if (!termLog || !termLog.trim()) {
-        console.log('剪贴板是空的，请先用鼠标选中一下终端里的信息哦！');
-        return;
-    }
-
-    const spinner: Ora = ora({
-        text: '准备开始分析...',
-        color: 'cyan',
-        spinner: 'dots' // 经典的三个点跳动动画
-    }).start();
-
-    const wikiIndex = single ? [] : getWikiIndex();
-    const recentHistory = single ? [] : getRecentHistory();
-
-    // 组装发给大模型的 Prompt
-    const systemPrompt: string = settings.global ?? '';
-    const historyText = formatHistory(recentHistory);
-    const wikiIndexText = formatWikiIndex(wikiIndex);
-    const userPrompt = `你是一个资深的程序员助手。请分析用户提供的终端信息，给出说明或解决方案。必要时提供相关命令，并说明命令是干什么的，解决什么问题。
-\n终端内容:${termLog}\n${extraMessage}\n本轮历史中完整的对话:\n${historyText || '无'}\n本轮历史中对话压缩后的Wiki目录:\n${wikiIndexText || '无'}`;
-
-    const tools: OpenAI.Chat.ChatCompletionTool[] = [
-        {
-            type: "function",
-            function: {
-                name: "fetch_wiki_detail",
-                description: "当用户当前的问题与历史 Wiki 目录中的某个主题相关，且你需要了解该历史步骤的详细内容时，调用此工具获取详情。",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        wiki_ids: {
-                            type: "array",
-                            items: {
-                                type: "integer"
-                            },
-                            description: "需要查阅的原始 Wiki 节点的 ID 数组，例如 [1, 3, 5]。",
-                        },
-                    },
-                    required: ["wiki_ids"],
-                },
-                strict: true
-            },
-        },
-    ];
+const autoCompactHistory = async (items: LLMPrompt<ChatHistory, 'id' | 'content'>[]): Promise<void> => {
+    const toCompact = items.slice(10);
+    const historyText = formatHistory(toCompact);
+    const systemPrompt: string = `${settings.global}\n${settings.compact}`;
+    const userPrompt = `本轮历史中完整的对话:\n${historyText}`;
 
     const baseMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
         {role: 'system', content: systemPrompt},
         {role: 'user', content: userPrompt},
     ];
 
-    // 第一次调用：先看是否触发 function calling
-    let firstCompletion;
-    if (single) {
-        firstCompletion = await openai.chat.completions.create({
-            model: LLM_MODEL,
-            messages: baseMessages
-        });
-    } else {
-        firstCompletion = await openai.chat.completions.create({
-            model: LLM_MODEL,
-            messages: baseMessages,
-            tools: tools,
-            tool_choice: "auto",
-        });
+    const WikiEntriesSchema = z.object({
+        entries: z.array(
+            z.object({
+                title: z.string().describe("提炼的独立标题，尽量简短。"),
+                detail_md: z.string().describe("详细的分析过程、解决方案或核心代码，必须使用优雅的 Markdown 格式。")
+            })
+        )
+    });
+
+    const completion = await openai.chat.completions.create({
+        model: LLM_MODEL,
+        messages: baseMessages,
+        response_format: zodResponseFormat(WikiEntriesSchema, "wiki_extraction"),
+        temperature: 0.2,
+    });
+
+    const response = completion.choices[0]?.message;
+
+    if (!response || !response.content) {
+        throw Error('LLM 返回格式解析失败');
     }
 
-    const firstResponse = firstCompletion.choices[0]?.message;
-
-    if (!firstResponse) {
-        spinner.fail('LLM 返回格式解析失败');
-        return;
+    const extracted = extractEntryFromText(response.content);
+    if (!extracted) {
+        throw Error(`LLM 压缩返回内容无法解析为条目。原始内容:${response.content}`);
     }
 
-    if (!firstResponse.tool_calls) {
-        if (!firstResponse.content) {
+    const validatedData = WikiEntriesSchema.parse(extracted);
+    const chatHistoryIds = toCompact.map((chatHistory) => chatHistory.id);
+    const wikiRecords: [string, string][] = validatedData.entries.map(wiki => [
+        wiki.title,
+        wiki.detail_md,
+    ]);
+
+    saveSessionWiki(chatHistoryIds, wikiRecords);
+};
+
+const why = async (): Promise<void> => {
+    let spinner: Ora | null = null;
+
+    try {
+        const {extraMessage, single} = parseCliArgs(process.argv.slice(2));
+        const termLog: string = clipboard.readSync();
+        if (!termLog || !termLog.trim()) {
+            console.log('剪贴板是空的，请先用鼠标选中一下终端里的信息哦！');
+            return;
+        }
+
+        spinner = ora({
+            text: '准备开始分析...',
+            color: 'cyan',
+            spinner: 'dots' // 经典的三个点跳动动画
+        }).start();
+
+        let recentHistory = single ? [] : getRecentHistory();
+        if (recentHistory.length > 15) {
+            await autoCompactHistory(recentHistory);
+            recentHistory = recentHistory.slice(0, 10);
+        }
+        const wikiIndex = single ? [] : getWikiIndex();
+
+        // 组装发给大模型的 Prompt
+        const systemPrompt: string = `${settings.global}\n${settings.why}`;
+        const historyText = formatHistory(recentHistory);
+        const wikiIndexText = formatWikiIndex(wikiIndex);
+        const userPrompt = `终端内容:${termLog}\n${extraMessage}\n本轮历史中完整的对话:\n${historyText || '无'}\n本轮历史中对话压缩后的Wiki目录:\n${wikiIndexText || '无'}`;
+
+        const tools: OpenAI.Chat.ChatCompletionTool[] = [
+            searchWikiTool,
+            readFileTool,
+        ];
+
+        const baseMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+            {role: 'system', content: systemPrompt},
+            {role: 'user', content: userPrompt},
+        ];
+
+        // 第一次调用：先看是否触发 function calling
+        let firstCompletion;
+        if (single) {
+            firstCompletion = await openai.chat.completions.create({
+                model: LLM_MODEL,
+                messages: baseMessages
+            });
+        } else {
+            firstCompletion = await openai.chat.completions.create({
+                model: LLM_MODEL,
+                messages: baseMessages,
+                tools: tools,
+                tool_choice: "auto",
+            });
+        }
+
+        const firstResponse = firstCompletion.choices[0]?.message;
+
+        if (!firstResponse) {
             spinner.fail('LLM 返回格式解析失败');
             return;
         }
+
+        if (!firstResponse.tool_calls) {
+            if (!firstResponse.content) {
+                spinner.fail('LLM 返回格式解析失败');
+                return;
+            }
+            spinner.succeed('----------------------------------------------------');
+            console.log(marked(firstResponse.content));
+            console.log('----------------------------------------------------');
+            console.log('LLM 分析完成');
+            if (!single) {
+                saveChatMsg(`历史终端信息:${termLog}\nLLM的完整分析结果:${firstResponse.content}`);
+            }
+            return;
+        }
+
+        baseMessages.push(firstResponse);
+
+        for (const tc of firstResponse.tool_calls) {
+            // fuck openai type!
+            const toolCall = tc as unknown as SafeToolCall;
+
+            if (toolCall.type !== 'function') {
+                throw Error('LLM 调用了不支持的工具类型');
+            }
+
+            if (toolCall.function.name === 'fetch_wiki_detail') {
+                const args = parseToolArgs<{ wiki_id?: number[]; wiki_ids?: number[] }>(toolCall.function.arguments);
+                const wikiIds = args.wiki_ids ?? args.wiki_id;
+                if (!Array.isArray(wikiIds) || wikiIds.length === 0) {
+                    throw Error('LLM 调用工具的参数错误');
+                }
+
+                const wikiDetail = getWikiDetail(wikiIds);
+                const wikiDetailText = formatWikiDetail(wikiDetail);
+
+                baseMessages.push({
+                    role: 'tool',
+                    tool_call_id: toolCall.id,
+                    content: `历史 Wiki 目录中 ${wikiIds} 号 id 的详细内容如下:\n${wikiDetailText || '无'}`,
+                });
+                continue;
+            }
+
+            if (toolCall.function.name === 'read_file') {
+                const args = parseToolArgs<ReadFileArgs>(toolCall.function.arguments);
+                const content = readFileToolHandler(args);
+                baseMessages.push({
+                    role: 'tool',
+                    tool_call_id: toolCall.id,
+                    content,
+                });
+                continue;
+            }
+
+            throw Error('LLM 调用了不支持的工具类型');
+        }
+
+        const secondCompletion = await openai.chat.completions.create({
+            model: LLM_MODEL,
+            messages: baseMessages,
+        });
+
+        const secondResponse = secondCompletion.choices[0]?.message;
+
+        if (!secondResponse || !secondResponse.content) {
+            spinner.fail('LLM 返回格式解析失败');
+            return;
+        }
+
         spinner.succeed('----------------------------------------------------');
-        console.log(marked(firstResponse.content));
+        console.log(marked(secondResponse.content));
         console.log('----------------------------------------------------');
         console.log('LLM 分析完成');
         if (!single) {
-            saveChatMsg(`历史终端信息:${termLog}\nLLM的完整分析结果:${firstResponse.content}`);
+            saveChatMsg(`历史终端信息:${termLog}\nLLM的完整分析结果:${secondResponse.content}`);
         }
-        return;
-    }
-
-    baseMessages.push(firstResponse);
-
-    for (const tc of firstResponse.tool_calls) {
-        // fuck openai type!
-        const toolCall = tc as unknown as SafeToolCall;
-
-        if (toolCall.type !== 'function') {
-            baseMessages.push({
-                role: 'tool',
-                tool_call_id: toolCall.id,
-                content: '不支持的工具类型。',
-            });
+    } catch (error: Error | unknown) {
+        if (spinner) {
+            spinner.fail('分析失败');
         }
-
-        if (toolCall.function.name !== 'fetch_wiki_detail') {
-            baseMessages.push({
-                role: 'tool',
-                tool_call_id: toolCall.id,
-                content: `不支持的工具:${toolCall.function.name}`,
-            });
-        }
-
-        const args = toolCall.function.arguments;
-        const wikiDetail = getWikiDetail(args.wiki_id);
-        const wikiDetailText = formatWikiDetail(wikiDetail);
-
-        baseMessages.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: `历史 Wiki 目录中 ${args.wiki_id} 号 id 的详细内容如下:\n${wikiDetailText || '无'}`,
-        });
-    }
-
-    const secondCompletion = await openai.chat.completions.create({
-        model: LLM_MODEL,
-        messages: baseMessages,
-    });
-
-    const secondResponse = secondCompletion.choices[0]?.message;
-
-    if (!secondResponse || !secondResponse.content) {
-        spinner.fail('LLM 返回格式解析失败');
-        return;
-    }
-
-    spinner.succeed('----------------------------------------------------');
-    console.log(marked(secondResponse.content));
-    console.log('----------------------------------------------------');
-    console.log('LLM 分析完成');
-    if (!single) {
-        saveChatMsg(`历史终端信息:${termLog}\nLLM的完整分析结果:${secondResponse.content}`);
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(message);
+        throw error;
     }
 }
 
