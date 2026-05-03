@@ -76,7 +76,7 @@ export const readFileTool: OpenAI.Chat.ChatCompletionTool = {
     },
 };
 
-export const readFileToolHandler = (args: ReadFileArgs): string => {
+export function readFileToolHandler(args: ReadFileArgs): string {
     const safePath = resolveWorkspacePath(args.file_path);
     if (!fs.existsSync(safePath)) {
         throw Error('LLM 要调用的文件不存在');

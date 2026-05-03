@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import {fileURLToPath} from "url";
+import * as sqliteVec from "sqlite-vec";
+import {getEmbedding} from "./share.js";
 
 // 1. 确定数据库文件路径
 const __filename = fileURLToPath(import.meta.url);
@@ -16,42 +18,9 @@ if (!fs.existsSync(dbDir)) {
 // 3. 连接数据库（如果文件不存在，better-sqlite3 会自动创建它）
 const db: Database.Database = new Database(dbPath);
 
-// 4. 初始化表结构
-// 创建短期记忆表 (chat_history)
-db.exec(`
-    CREATE TABLE IF NOT EXISTS chat_history
-    (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id   INTEGER,            -- 当前会话 ID
-        content      TEXT,               -- 原始对话内容
-        is_compacted INTEGER  DEFAULT 0, -- 关键：标记该条目是否已被压缩进 Wiki
-        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-`);
+sqliteVec.load(db);
 
-// 创建长期记忆表 (session_wiki)
-db.exec(`
-    CREATE TABLE IF NOT EXISTS session_wiki
-    (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id INTEGER,
-        title      TEXT, -- 对话块的摘要标题
-        detail_md  TEXT, -- 详细的知识点或解决方案
-        chat_ids   TEXT, -- 关联的 chat_history ID 列表（逗号分隔）
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-`);
-
-// 创建会话表 (sessions)
-db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions
-    (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-`);
-
-// 5. 查询会话
+// 4. 查询会话
 const getSessions = (): { id: number }[] => {
     const stmt = db.prepare(`SELECT id
                              FROM sessions
@@ -75,7 +44,7 @@ export interface ChatHistory {
     created_at: string;
 }
 
-export interface SessionWiki {
+interface SessionWiki {
     id: number;
     session_id: number;
     title: string;
@@ -84,7 +53,15 @@ export interface SessionWiki {
     created_at: string;
 }
 
-interface session {
+interface Wiki {
+    id: number;
+    session_id: number;
+    title: string;
+    detail_md: string;
+    created_at: string;
+}
+
+interface Session {
     id: number;
     created_at: string;
 }
@@ -141,24 +118,39 @@ export function saveChatMsg(content: string): void {
 }
 
 // 批量保存新对话到长期记忆
-export function saveSessionWiki(chatHistoryIds: number[], wikiRecords: [string, string][]): void {
-    const wikiPlaceholders = wikiRecords.map(() => '(?, ?, ?, ?)').join(',');
+export async function saveWiki(
+    chatHistoryIds: number[],
+    wikiTitles: string[],
+    wikiDetails: string[]
+): Promise<void> {
     const historyPlaceholders = chatHistoryIds.map(() => '?').join(',');
+    const chatIds = chatHistoryIds.join(',');
 
-    const transaction = db.transaction((): void => {
-        const insertStmt = db.prepare(`INSERT INTO session_wiki (session_id, title, detail_md, chat_ids)
-                                       VALUES ${wikiPlaceholders}`);
-        const chatIds = chatHistoryIds.join(',');
-        const insertValues = wikiRecords.map((wiki) => [sessionId, wiki[0], wiki[1], chatIds]).flat();
-        insertStmt.run(...insertValues);
+    const insertSessionWikiStmt = db.prepare(`INSERT INTO session_wiki (session_id, title, detail_md, chat_ids)
+                                              VALUES (?, ?, ?, ?)`);
+    const insertGlobalWikiStmt = db.prepare(`INSERT INTO wiki (session_id, title, detail_md)
+                                             VALUES (?, ?, ?)`);
+    const insertVecStmt = db.prepare(`INSERT INTO vec_memories (rowid, embedding)
+                                      VALUES (?, ?)`);
+    const updateStmt = db.prepare(`UPDATE chat_history
+                                   SET is_compacted = 1
+                                   WHERE id IN (${historyPlaceholders})`);
 
-        const updateStmt = db.prepare(`UPDATE chat_history
-                                       SET is_compacted = 1
-                                       WHERE id IN (${historyPlaceholders})`);
+    const embeddings = await Promise.all(wikiTitles.map((title) => getEmbedding(title)));
+
+    const saveWithEmbeddings = db.transaction((): void => {
+        for (let i = 0; i < wikiTitles.length; i++) {
+            insertSessionWikiStmt.run(sessionId, wikiTitles[i], wikiDetails[i], chatIds);
+            const res = insertGlobalWikiStmt.run(sessionId, wikiTitles[i], wikiDetails[i]);
+            const embedding = embeddings[i];
+            if (!embedding) throw Error(`缺失 embedding 数据，无法保存向量记忆。标题: ${wikiTitles[i]}`);
+            const float32Embedding = new Float32Array(embedding);
+            insertVecStmt.run(res.lastInsertRowid, float32Embedding);
+        }
         updateStmt.run(...chatHistoryIds);
     });
 
-    transaction();
+    saveWithEmbeddings();
 }
 
 // 还原压缩后的对话（将 Wiki 详情重新插入短期记忆）
@@ -235,9 +227,32 @@ export function touchSessionRecord(oldSessionId: number): void {
 }
 
 // 查询所有会话
-export function listSessions(): session[] {
+export function listSessions(): Session[] {
     const stmt = db.prepare(`SELECT id, created_at
                              FROM sessions
                              ORDER BY created_at DESC`);
-    return stmt.all() as session[];
+    return stmt.all() as Session[];
+}
+
+// 按照向量相似度查询，并过滤掉当前 Session 的记录
+export function queryVecMemories(embedding: number[]): LLMPrompt<Wiki, 'id' | 'title' | 'detail_md'>[] {
+    const float32Embedding = new Float32Array(embedding);
+    // 获取 vec_memories 记录及其对应的 rowId
+    const wikiStmt = db.prepare(`SELECT w.id, w.session_id, w.title, w.detail_md, v.distance
+                                 FROM vec_memories v
+                                          JOIN wiki w ON w.id = v.rowid
+                                 WHERE v.embedding MATCH ? -- 传入当前问题的 embedding
+                                 ORDER BY v.distance
+                                 LIMIT 5;`);
+    const wikiRecords = wikiStmt.all(float32Embedding) as {
+        id: number;
+        session_id: number;
+        title: string;
+        detail_md: string;
+        distance: number; // 计算得到的距离值
+    }[];
+
+    const RAG_THRESHOLD = 0.8; // 距离越小越相似，超过阈值说明没有相关记忆
+    return wikiRecords.filter(wiki => wiki.distance < RAG_THRESHOLD)
+        .filter(wiki => wiki.session_id !== sessionId);
 }

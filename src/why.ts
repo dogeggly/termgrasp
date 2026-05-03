@@ -5,8 +5,9 @@ import {
     getWikiDetail,
     getWikiIndex,
     type LLMPrompt,
+    queryVecMemories,
     saveChatMsg,
-    saveSessionWiki
+    saveWiki
 } from "./db.js";
 import {OpenAI} from "openai";
 import ora, {type Ora} from "ora";
@@ -15,7 +16,7 @@ import TerminalRenderer from "marked-terminal";
 import "dotenv/config";
 import {z} from "zod";
 import {zodResponseFormat} from "openai/helpers/zod";
-import {extractEntryFromText, formatHistory, LLM_MODEL, openai, settings} from "./share.js";
+import {extractEntryFromText, formatHistory, getEmbedding, LLM_MODEL, openai, settings} from "./share.js";
 import {readFileTool, readFileToolHandler, type ReadFileArgs} from "./tools.js";
 
 // 配置 marked 使用 TerminalRenderer 来渲染 Markdown
@@ -104,6 +105,9 @@ const formatWikiIndex = (items: { id: number; title: string }[]): string =>
 const formatWikiDetail = (items: { id: number; detail_md: string }[]): string =>
     items.map(item => `ID:${item.id}\n详情:${item.detail_md}`).join('\n\n');
 
+const formatVecWiki = (items: { id: number; title: string; detail_md: string }[]): string =>
+    items.map(item => `ID:${item.id}\n标题:${item.title}\n详情:${item.detail_md}`).join('\n\n');
+
 const autoCompactHistory = async (items: LLMPrompt<ChatHistory, 'id' | 'content'>[]): Promise<void> => {
     const toCompact = items.slice(10);
     const historyText = formatHistory(toCompact);
@@ -144,12 +148,9 @@ const autoCompactHistory = async (items: LLMPrompt<ChatHistory, 'id' | 'content'
 
     const validatedData = WikiEntriesSchema.parse(extracted);
     const chatHistoryIds = toCompact.map((chatHistory) => chatHistory.id);
-    const wikiRecords: [string, string][] = validatedData.entries.map(wiki => [
-        wiki.title,
-        wiki.detail_md,
-    ]);
-
-    saveSessionWiki(chatHistoryIds, wikiRecords);
+    const wikiTitles = validatedData.entries.map(wiki => wiki.title);
+    const wikiDetails = validatedData.entries.map(wiki => wiki.detail_md);
+    await saveWiki(chatHistoryIds, wikiTitles, wikiDetails);
 };
 
 const why = async (): Promise<void> => {
@@ -175,12 +176,14 @@ const why = async (): Promise<void> => {
             recentHistory = recentHistory.slice(0, 10);
         }
         const wikiIndex = single ? [] : getWikiIndex();
+        const vecWikis = single ? [] : queryVecMemories(await getEmbedding(`${termLog}\n${extraMessage}`));
 
         // 组装发给大模型的 Prompt
         const systemPrompt: string = `${settings.global}\n${settings.why}`;
         const historyText = formatHistory(recentHistory);
         const wikiIndexText = formatWikiIndex(wikiIndex);
-        const userPrompt = `终端内容:${termLog}\n${extraMessage}\n本轮历史中完整的对话:\n${historyText || '无'}\n本轮历史中对话压缩后的Wiki目录:\n${wikiIndexText || '无'}`;
+        const vecWikiText = formatVecWiki(vecWikis);
+        const userPrompt = `终端内容:${termLog}\n${extraMessage}\n本轮历史中完整的对话:\n${historyText || '无'}\n本轮历史中对话压缩后的Wiki目录:\n${wikiIndexText || '无'}\n向量检索到的相关Wiki:\n${vecWikiText || '无'}`;
 
         const tools: OpenAI.Chat.ChatCompletionTool[] = [
             searchWikiTool,

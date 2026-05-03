@@ -28,6 +28,7 @@ export function formatHistory(items: { id: number; content: string }[]): string 
 const LLM_API_KEY = process.env.LLM_API_KEY;
 const LLM_BASE_URL = process.env.LLM_BASE_URL;
 const MODEL = process.env.LLM_MODEL;
+const EMBEDDING_MODEL = process.env.LLM_EMBEDDING_MODEL;
 
 if (!LLM_API_KEY || !LLM_BASE_URL || !MODEL) {
     throw Error('LLM_API_KEY, LLM_BASE_URL, LLM_MODEL 环境变量必须设置');
@@ -37,6 +38,16 @@ export const openai = new OpenAI({
     apiKey: LLM_API_KEY,
     baseURL: LLM_BASE_URL
 });
+
+export async function getEmbedding(text: string): Promise<number[]> {
+    if (!EMBEDDING_MODEL) throw Error('LLM_EMBEDDING_MODEL 环境变量必须设置');
+    const response = await openai.embeddings.create({
+        model: EMBEDDING_MODEL,
+        input: text,
+    });
+
+    return response.data[0]?.embedding ?? [];
+}
 
 export const LLM_MODEL = MODEL;
 

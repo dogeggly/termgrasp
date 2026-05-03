@@ -1,5 +1,5 @@
 import {OpenAI} from "openai";
-import {getRecentHistory, saveSessionWiki} from "./db.js";
+import {getRecentHistory, saveWiki} from "./db.js";
 import {z} from 'zod';
 import {zodResponseFormat} from 'openai/helpers/zod';
 import "dotenv/config";
@@ -59,14 +59,10 @@ const compact = async (): Promise<void> => {
     const validatedData = WikiEntriesSchema.parse(extracted);
 
     const chatHistoryIds = recentHistory.map((chatHistory) => chatHistory.id);
+    const wikiTitles = validatedData.entries.map(wiki => wiki.title);
+    const wikiDetails = validatedData.entries.map(wiki => wiki.detail_md);
 
-    // 将 entries 转换为 saveSessionWiki 期望的格式
-    const wikiRecords: [string, string][] = validatedData.entries.map(wiki => [
-        wiki.title,
-        wiki.detail_md,
-    ]);
-
-    saveSessionWiki(chatHistoryIds, wikiRecords);
+    await saveWiki(chatHistoryIds, wikiTitles, wikiDetails);
 
     spinner.succeed('总结 Wiki 条目完毕');
 }

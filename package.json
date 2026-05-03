@@ -4,7 +4,8 @@
   "description": "",
   "main": "dist/index.js",
   "scripts": {
-    "build": "rimraf dist && tsc"
+    "start": "node src/index.ts",
+    "build": "rimraf dist && tsc && node dist/init.js"
   },
   "keywords": [],
   "author": "",
@@ -22,6 +23,7 @@
     "marked-terminal": "^7.3.0",
     "openai": "^6.34.0",
     "ora": "^9.4.0",
+    "sqlite-vec": "^0.1.9",
     "zod": "^4.3.6"
   },
   "devDependencies": {

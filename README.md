@@ -26,6 +26,7 @@ npm install
 LLM_API_KEY=xxxxxxxxxxxxxxxx
 LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
 LLM_MODEL=glm-4.5
+LLM_EMBEDDING_MODEL=
 ```   
 
 3. 挂载全局命令
